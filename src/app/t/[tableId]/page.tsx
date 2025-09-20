@@ -1,13 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { format, formatDistanceToNowStrict } from "date-fns";
+import { differenceInMinutes, format, formatDistanceToNowStrict } from "date-fns";
 import { useParams } from "next/navigation";
 
 import { flush, enqueue } from "@/lib/offlineQueue";
 import { nextLabels } from "@/lib/labels";
 import { supabase } from "@/lib/supabaseClient";
-import { priceForRoomSession, pricePerTicket } from "@/pricing/engine";
+import {
+  computeRoomHourly,
+  computeTeachingPerPerson,
+  pricePerTicket,
+  resolvePlan,
+} from "@/pricing/engine";
 import { Button } from "@/ui/Button";
 import { Card } from "@/ui/Card";
 import { Toggle } from "@/ui/Toggle";
@@ -376,63 +381,26 @@ export default function TablePage() {
         return;
       }
 
-      // 結束所有未結束票
-      const { data: opens, error: listErr } = await supabase
+      const { data: ticketRows, error: ticketsErr } = await supabase
         .from("tickets")
         .select("*")
         .eq("session_id", s.id)
-        .is("ended_at", null);
-      if (listErr) throw listErr;
+        .order("started_at", { ascending: true });
+      if (ticketsErr) throw ticketsErr;
 
       const now = new Date();
-      const openList = (opens as Ticket[]) ?? [];
-
-      if (meta.name.includes("包廂")) {
-        try {
-          const roomSummary = priceForRoomSession({
-            tableName: meta.name,
-            area: meta.area ?? "",
-            sessionOpenedAt: new Date(s.opened_at),
-            sessionEndedAt: now,
-            people: openList.length,
-            teaching,
-          });
-          const summaryLines = [
-            `日期類型：${roomSummary.day}`,
-            `總時長：${roomSummary.minutes} 分鐘`,
-          ];
-          if (roomSummary.meta.mode === "room_hourly") {
-            summaryLines.push(`計費小時：${roomSummary.meta.billedHours}`);
-          } else {
-            summaryLines.push(
-              `每人：NT$${(
-                roomSummary.meta.perPersonCents / 100
-              ).toFixed(0)} × ${roomSummary.meta.billedPeople} 人`
-            );
-          }
-          summaryLines.push(
-            `總計：NT$${(roomSummary.total_cents / 100).toFixed(0)}`
-          );
-          alert(summaryLines.join("\n"));
-        } catch (error) {
-          console.error("priceForRoomSession failed", error);
-          alert(
-            `包廂計價失敗：${
-              error instanceof Error ? error.message : "未知的計價錯誤"
-            }`
-          );
-          return;
-        }
-      }
+      const allTickets = (ticketRows as Ticket[]) ?? [];
+      const openTicketsForCheckout = allTickets.filter((t) => !t.ended_at);
 
       const calculations: Array<{
         ticket: Ticket;
         minutes: number;
         price_cents: number;
       }> = [];
+      let summaryLines: string[] | null = null;
 
       if (!isRoom) {
-        for (const t of openList) {
+        for (const t of openTicketsForCheckout) {
           try {
             const pricing = pricePerTicket({
               tableName: meta.name,
@@ -456,27 +424,131 @@ export default function TablePage() {
           }
         }
       } else {
-        // 包廂票券改以房間總價平均，避免缺 per-person tier。
-        const roomPricing = priceForRoomSession({
-          tableName: meta.name,
-          area: meta.area ?? "",
-          sessionOpenedAt: new Date(s.opened_at),
-          sessionEndedAt: now,
-          people: openList.length || 1,
-          teaching,
-        });
-        const perTicket = Math.round(
-          openList.length
-            ? roomPricing.total_cents / openList.length
-            : roomPricing.total_cents
-        );
-        calculations.push(
-          ...openList.map((ticket) => ({
-            ticket,
-            minutes: roomPricing.minutes,
-            price_cents: perTicket,
-          }))
-        );
+        const allTicketsWithSpans = allTickets.map((t) => ({
+          ticket: t,
+          startedAt: new Date(t.started_at),
+          endedAt: t.ended_at ? new Date(t.ended_at) : now,
+        }));
+        const earliest = allTicketsWithSpans.reduce<Date | null>((acc, item) => {
+          if (!acc || item.startedAt < acc) return item.startedAt;
+          return acc;
+        }, null);
+        const earliestStart = earliest ?? (s.opened_at ? new Date(s.opened_at) : now);
+
+        if (!teaching) {
+          // room_hourly: bill from earliest ticket start through checkout.
+          const { rules, day } = resolvePlan({
+            tableName: meta.name,
+            area: meta.area ?? "",
+            at: earliestStart,
+          });
+          const minutes = Math.max(1, differenceInMinutes(now, earliestStart));
+          const hourly = computeRoomHourly(minutes, rules);
+          const totalCents = hourly.totalCents;
+          const openCount = openTicketsForCheckout.length;
+
+          const baseShare = openCount > 0 ? Math.floor(totalCents / openCount) : 0;
+          const remainder = openCount > 0 ? totalCents - baseShare * openCount : 0;
+
+          openTicketsForCheckout.forEach((ticket, index) => {
+            const startedAt = new Date(ticket.started_at);
+            const mins = Math.max(1, differenceInMinutes(now, startedAt));
+            const share =
+              openCount === 0
+                ? 0
+                : baseShare + (index < remainder ? 1 : 0);
+            calculations.push({
+              ticket,
+              minutes: mins,
+              price_cents: share,
+            });
+          });
+
+          summaryLines = [
+            "包廂：時段計價",
+            `日期類型：${day}`,
+            `計費時段：${minutes} 分鐘（約 ${hourly.billedHours} 小時）`,
+            `總計：NT$${(totalCents / 100).toFixed(0)}`,
+            "* 說明：以最早入座者的開局時間至結帳時間計算。",
+          ];
+        } else {
+          // teaching: charge per person based on individual stay; enforce min_people.
+          const openPricing = openTicketsForCheckout.map((ticket) => {
+            const startedAt = new Date(ticket.started_at);
+            const mins = Math.max(
+              1,
+              differenceInMinutes(now, startedAt)
+            );
+            const { rules, day } = resolvePlan({
+              tableName: meta.name,
+              area: meta.area ?? "",
+              at: startedAt,
+            });
+            const perPersonCents = computeTeachingPerPerson(mins, rules);
+            return {
+              ticket,
+              minutes: mins,
+              price_cents: perPersonCents,
+              minPeople: rules.teaching.min_people,
+              day,
+            };
+          });
+
+          const actualPeople = openPricing.length;
+          const minPeople = openPricing.reduce(
+            (max, item) => Math.max(max, item.minPeople),
+            0
+          );
+          let totalCents = openPricing.reduce(
+            (sum, item) => sum + item.price_cents,
+            0
+          );
+
+          let billedPeople = actualPeople;
+          if (actualPeople > 0 && minPeople > actualPeople) {
+            const targetTotal = Math.round(
+              (totalCents / actualPeople) * minPeople
+            );
+            const multiplier = totalCents === 0 ? 0 : targetTotal / totalCents;
+            let running = 0;
+            openPricing.forEach((item, index) => {
+              let price =
+                totalCents === 0
+                  ? Math.floor(targetTotal / actualPeople)
+                  : Math.round(item.price_cents * multiplier);
+              if (index === openPricing.length - 1) {
+                price = targetTotal - running;
+              }
+              running += price;
+              item.price_cents = price;
+            });
+            totalCents = targetTotal;
+            billedPeople = minPeople;
+          }
+
+          openPricing.forEach((item) => {
+            calculations.push({
+              ticket: item.ticket,
+              minutes: item.minutes,
+              price_cents: item.price_cents,
+            });
+          });
+
+          const totalMinutes = openPricing.reduce(
+            (sum, item) => sum + item.minutes,
+            0
+          );
+          const dayLabels = Array.from(new Set(openPricing.map((i) => i.day)));
+
+          summaryLines = [
+            "包廂：教學計價",
+            `日期類型：${dayLabels.join(", ") || "-"}`,
+            `實際人數：${actualPeople}，計費人數：${billedPeople}`,
+            `累積時數：${totalMinutes} 分鐘`,
+            `總計：NT$${(totalCents / 100).toFixed(0)}`,
+            "* 說明：每位顧客以其入座時間起算，若低於教學最低人數則依最低人數計費。",
+          ];
+        }
       }
 
       for (const result of calculations) {
@@ -502,6 +574,10 @@ export default function TablePage() {
       if (closeErr) throw closeErr;
 
       await loadTickets({ ...s, closed_at: now.toISOString() });
+
+      if (summaryLines) {
+        alert(summaryLines.join("\n"));
+      }
     } catch (error) {
       console.error(error);
       await enqueue({ kind: "checkout", payload: {} });

@@ -97,6 +97,22 @@ export function computeTeaching(
   return { perPersonCents: perPerson, people: p, totalCents: p * perPerson };
 }
 
+export function computeTeachingPerPerson(
+  totalMinutes: number,
+  rules: RulesPerDay
+) {
+  const baseMins = rules.teaching.base_hours * 60;
+  if (totalMinutes <= baseMins) {
+    return rules.teaching.base_price_cents_per_person;
+  }
+  const extra = totalMinutes - baseMins;
+  const extraUnits = ceilDiv(extra, rules.teaching.extra_unit_minutes);
+  return (
+    rules.teaching.base_price_cents_per_person +
+    extraUnits * rules.teaching.extra_unit_price_cents_per_person
+  );
+}
+
 // —— 高階：給桌頁使用 —— //
 // 一般座位：每票在「結束」時計價
 export function pricePerTicket(params: {
