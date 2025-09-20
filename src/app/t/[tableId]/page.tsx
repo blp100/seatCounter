@@ -1,16 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { flush, enqueue } from "@/lib/offlineQueue";
-import { computePriceCents } from "@/lib/pricing";
 import { nextLabels } from "@/lib/labels";
-import {
-  differenceInMinutes,
-  format,
-  formatDistanceToNowStrict,
-} from "date-fns";
+import { format, formatDistanceToNowStrict } from "date-fns";
 import { useParams } from "next/navigation";
+import { priceForRoomSession, pricePerTicket } from "@/pricing/engine";
 
 type Session = {
   id: string;
@@ -30,6 +26,12 @@ type Ticket = {
   note: string | null;
 };
 
+type TableMeta = {
+  id: string;
+  name: string;
+  area: string | null;
+};
+
 export default function TablePage() {
   const params = useParams();
 
@@ -42,6 +44,79 @@ export default function TablePage() {
   const [closedTickets, setClosedTickets] = useState<Ticket[]>([]);
   const [busy, setBusy] = useState(false);
   const [undoTicket, setUndoTicket] = useState<Ticket | null>(null);
+  const [tableMeta, setTableMeta] = useState<TableMeta | null>(null);
+  const [tableMetaLoading, setTableMetaLoading] = useState(true);
+  const [tableMetaError, setTableMetaError] = useState<string | null>(null);
+  const [teaching, setTeaching] = useState(false);
+  const isRoom = tableMeta?.name.includes("包廂") ?? false;
+
+  useEffect(() => {
+    if (!isRoom && teaching) {
+      setTeaching(false);
+    }
+  }, [isRoom, teaching]);
+
+  const fetchTableMeta = useCallback(async (): Promise<TableMeta | null> => {
+    const { data, error } = await supabase
+      .from("tables")
+      .select("id, name, area")
+      .eq("id", tableId)
+      .maybeSingle();
+    if (error) throw error;
+    return (data as TableMeta | null) ?? null;
+  }, [tableId]);
+
+  const ensureTableMeta = useCallback(async (): Promise<TableMeta | null> => {
+    if (tableMeta) return tableMeta;
+    try {
+      const meta = await fetchTableMeta();
+      if (!meta) {
+        setTableMetaError("找不到桌位資料");
+        setTableMetaLoading(false);
+        return null;
+      }
+      setTableMeta(meta);
+      setTableMetaError(null);
+      setTableMetaLoading(false);
+      return meta;
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "無法讀取桌位資料";
+      setTableMetaError(message);
+      alert(`無法讀取桌位資料：${message}`);
+      setTableMetaLoading(false);
+      return null;
+    }
+  }, [fetchTableMeta, tableMeta]);
+
+  useEffect(() => {
+    let active = true;
+    setTableMeta(null);
+    setTableMetaError(null);
+    setTableMetaLoading(true);
+    fetchTableMeta()
+      .then((meta) => {
+        if (!active) return;
+        if (meta) {
+          setTableMeta(meta);
+          setTableMetaError(null);
+        } else {
+          setTableMetaError("找不到桌位資料");
+        }
+      })
+      .catch((error) => {
+        if (!active) return;
+        const message =
+          error instanceof Error ? error.message : "無法讀取桌位資料";
+        setTableMetaError(message);
+      })
+      .finally(() => {
+        if (active) setTableMetaLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [fetchTableMeta]);
 
   async function getOpenSession(): Promise<Session | null> {
     const { data, error } = await supabase
@@ -101,6 +176,7 @@ export default function TablePage() {
   // 進入頁面：嘗試清空離線佇列，再讀資料
   useEffect(() => {
     (async () => {
+      await ensureTableMeta();
       await flush(async (item) => {
         // 簡化處理：依 kind 直接呼叫對應操作
         if (item.kind === "enter") await handleEnter(item.payload.count);
@@ -143,7 +219,8 @@ export default function TablePage() {
       if (insErr) throw insErr;
 
       await loadTickets(s);
-    } catch (e) {
+    } catch (error) {
+      console.error(error);
       await enqueue({ kind: "enter", payload: { count } });
       alert("目前離線，已加入待傳佇列。");
     } finally {
@@ -153,23 +230,41 @@ export default function TablePage() {
 
   async function endTicket(ticketId: string, auto: boolean) {
     const s = session!;
-    const now = new Date();
+    const endedAt = new Date();
     // 查該票
     const t = openTickets.find((x) => x.id === ticketId);
     if (!t) return;
 
-    const minutes = Math.max(
-      1,
-      differenceInMinutes(now, new Date(t.started_at))
-    );
-    const price_cents = computePriceCents(minutes);
+    const meta = await ensureTableMeta();
+    if (!meta) {
+      alert("找不到桌位資料，無法結束票。");
+      return;
+    }
+
+    let pricing;
+    try {
+      pricing = pricePerTicket({
+        tableName: meta.name,
+        area: meta.area ?? "",
+        startedAt: new Date(t.started_at),
+        endedAt,
+      });
+    } catch (error) {
+      console.error("pricePerTicket failed", error);
+      alert(
+        `計價失敗：${
+          error instanceof Error ? error.message : "未知的計價錯誤"
+        }`
+      );
+      return;
+    }
 
     const { error: updErr } = await supabase
       .from("tickets")
       .update({
-        ended_at: now.toISOString(),
-        minutes,
-        price_cents,
+        ended_at: endedAt.toISOString(),
+        minutes: pricing.minutes,
+        price_cents: pricing.price_cents,
         auto_ended: auto,
       })
       .eq("id", ticketId);
@@ -177,9 +272,9 @@ export default function TablePage() {
 
     setUndoTicket({
       ...t,
-      ended_at: now.toISOString(),
-      minutes,
-      price_cents,
+      ended_at: endedAt.toISOString(),
+      minutes: pricing.minutes,
+      price_cents: pricing.price_cents,
       auto_ended: auto,
     });
     await loadTickets(s);
@@ -201,7 +296,8 @@ export default function TablePage() {
       if (error) throw error;
       if (!data || data.length === 0) return;
       await endTicket(data[0].id, true);
-    } catch (e) {
+    } catch (error) {
+      console.error(error);
       await enqueue({ kind: "leave_oldest", payload: {} });
       alert("目前離線，已加入待傳佇列。");
     } finally {
@@ -214,7 +310,8 @@ export default function TablePage() {
       setBusy(true);
       if (!session) await ensureSession();
       await endTicket(ticketId, false);
-    } catch (e) {
+    } catch (error) {
+      console.error(error);
       await enqueue({ kind: "leave_pick", payload: { ticketId } });
       alert("目前離線，已加入待傳佇列。");
     } finally {
@@ -239,7 +336,8 @@ export default function TablePage() {
       if (error) throw error;
       setUndoTicket(null);
       if (session) await loadTickets(session);
-    } catch (e) {
+    } catch (error) {
+      console.error(error);
       await enqueue({ kind: "undo", payload: {} });
       alert("目前離線，已加入待傳佇列。");
     } finally {
@@ -253,6 +351,12 @@ export default function TablePage() {
       const s = session ?? (await createSession());
       if (!session) setSession(s);
 
+      const meta = await ensureTableMeta();
+      if (!meta) {
+        alert("找不到桌位資料，無法結帳。");
+        return;
+      }
+
       // 結束所有未結束票
       const { data: opens, error: listErr } = await supabase
         .from("tickets")
@@ -262,21 +366,110 @@ export default function TablePage() {
       if (listErr) throw listErr;
 
       const now = new Date();
-      for (const t of opens || []) {
-        const minutes = Math.max(
-          1,
-          differenceInMinutes(now, new Date(t.started_at))
+      const openList = (opens as Ticket[]) ?? [];
+
+      if (meta.name.includes("包廂")) {
+        try {
+          const roomSummary = priceForRoomSession({
+            tableName: meta.name,
+            area: meta.area ?? "",
+            sessionOpenedAt: new Date(s.opened_at),
+            sessionEndedAt: now,
+            people: openList.length,
+            teaching,
+          });
+          const summaryLines = [
+            `日期類型：${roomSummary.day}`,
+            `總時長：${roomSummary.minutes} 分鐘`,
+          ];
+          if (roomSummary.meta.mode === "room_hourly") {
+            summaryLines.push(`計費小時：${roomSummary.meta.billedHours}`);
+          } else {
+            summaryLines.push(
+              `每人：NT$${(
+                roomSummary.meta.perPersonCents / 100
+              ).toFixed(0)} × ${roomSummary.meta.billedPeople} 人`
+            );
+          }
+          summaryLines.push(
+            `總計：NT$${(roomSummary.total_cents / 100).toFixed(0)}`
+          );
+          alert(summaryLines.join("\n"));
+        } catch (error) {
+          console.error("priceForRoomSession failed", error);
+          alert(
+            `包廂計價失敗：${
+              error instanceof Error ? error.message : "未知的計價錯誤"
+            }`
+          );
+          return;
+        }
+      }
+
+      const calculations: Array<{
+        ticket: Ticket;
+        minutes: number;
+        price_cents: number;
+      }> = [];
+
+      if (!isRoom) {
+        for (const t of openList) {
+          try {
+            const pricing = pricePerTicket({
+              tableName: meta.name,
+              area: meta.area ?? "",
+              startedAt: new Date(t.started_at),
+              endedAt: now,
+            });
+            calculations.push({
+              ticket: t,
+              minutes: pricing.minutes,
+              price_cents: pricing.price_cents,
+            });
+          } catch (error) {
+            console.error("pricePerTicket failed", error);
+            alert(
+              `計價失敗：${
+                error instanceof Error ? error.message : "未知的計價錯誤"
+              }`
+            );
+            return;
+          }
+        }
+      } else {
+        // 包廂票券改以房間總價平均，避免缺 per-person tier。
+        const roomPricing = priceForRoomSession({
+          tableName: meta.name,
+          area: meta.area ?? "",
+          sessionOpenedAt: new Date(s.opened_at),
+          sessionEndedAt: now,
+          people: openList.length || 1,
+          teaching,
+        });
+        const perTicket = Math.round(
+          openList.length
+            ? roomPricing.total_cents / openList.length
+            : roomPricing.total_cents
         );
-        const price_cents = computePriceCents(minutes);
+        calculations.push(
+          ...openList.map((ticket) => ({
+            ticket,
+            minutes: roomPricing.minutes,
+            price_cents: perTicket,
+          }))
+        );
+      }
+
+      for (const result of calculations) {
         const { error: updErr } = await supabase
           .from("tickets")
           .update({
             ended_at: now.toISOString(),
-            minutes,
-            price_cents,
-            auto_ended: t.auto_ended,
+            minutes: result.minutes,
+            price_cents: result.price_cents,
+            auto_ended: result.ticket.auto_ended,
           })
-          .eq("id", t.id);
+          .eq("id", result.ticket.id);
         if (updErr) throw updErr;
       }
 
@@ -290,7 +483,8 @@ export default function TablePage() {
       if (closeErr) throw closeErr;
 
       await loadTickets({ ...s, closed_at: now.toISOString() });
-    } catch (e) {
+    } catch (error) {
+      console.error(error);
       await enqueue({ kind: "checkout", payload: {} });
       alert("目前離線，已加入待傳佇列。");
     } finally {
@@ -302,16 +496,45 @@ export default function TablePage() {
 
   return (
     <main className="max-w-xl mx-auto p-4 space-y-6">
-      <header className="space-y-1">
-        <h1 className="text-2xl font-bold">
-          {process.env.NEXT_PUBLIC_APP_TITLE || "SeatCounter"}
-        </h1>
-        <p className="text-sm text-gray-600">桌標識：{tableId}</p>
-        {openedAt && (
-          <p className="text-sm text-gray-600">
-            已入座：{formatDistanceToNowStrict(openedAt, { addSuffix: false })}
+      <header className="space-y-2">
+        <div className="space-y-1">
+          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+            {process.env.NEXT_PUBLIC_APP_TITLE || "SeatCounter"}
           </p>
-        )}
+          <h1 className="text-2xl font-bold">
+            {tableMeta?.name ?? `桌位 ${tableId}`}
+          </h1>
+        </div>
+        <div className="space-y-1 text-sm text-gray-600">
+          <p>桌標識：{tableId}</p>
+          {tableMeta?.area ? <p>區域：{tableMeta.area}</p> : null}
+          {tableMetaLoading && !tableMeta ? <p>桌位資料載入中…</p> : null}
+          {tableMetaError ? (
+            <p className="text-red-500">桌位資料錯誤：{tableMetaError}</p>
+          ) : null}
+          {openedAt && (
+            <p>
+              已入座：
+              {formatDistanceToNowStrict(openedAt, { addSuffix: false })}
+            </p>
+          )}
+        </div>
+        {isRoom ? (
+          <label className="flex items-center justify-between rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm">
+            <div className="flex flex-col">
+              <span className="font-semibold text-gray-700">教學加價</span>
+              <span className="text-xs text-gray-500">
+                勾選後結帳時計入教學方案
+              </span>
+            </div>
+            <input
+              type="checkbox"
+              className="h-5 w-5"
+              checked={teaching}
+              onChange={(event) => setTeaching(event.target.checked)}
+            />
+          </label>
+        ) : null}
       </header>
 
       <section className="flex items-center justify-between">
