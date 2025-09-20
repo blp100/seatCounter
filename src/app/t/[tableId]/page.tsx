@@ -1,12 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { supabase } from "@/lib/supabaseClient";
-import { flush, enqueue } from "@/lib/offlineQueue";
-import { nextLabels } from "@/lib/labels";
 import { format, formatDistanceToNowStrict } from "date-fns";
 import { useParams } from "next/navigation";
+
+import { flush, enqueue } from "@/lib/offlineQueue";
+import { nextLabels } from "@/lib/labels";
+import { supabase } from "@/lib/supabaseClient";
 import { priceForRoomSession, pricePerTicket } from "@/pricing/engine";
+import { Button } from "@/ui/Button";
+import { Card } from "@/ui/Card";
+import { Toggle } from "@/ui/Toggle";
+import { font } from "@/ui/theme";
 
 type Session = {
   id: string;
@@ -241,30 +246,44 @@ export default function TablePage() {
       return;
     }
 
-    let pricing;
-    try {
-      pricing = pricePerTicket({
-        tableName: meta.name,
-        area: meta.area ?? "",
-        startedAt: new Date(t.started_at),
-        endedAt,
-      });
-    } catch (error) {
-      console.error("pricePerTicket failed", error);
-      alert(
-        `計價失敗：${
-          error instanceof Error ? error.message : "未知的計價錯誤"
-        }`
+    const isRoomTable = meta.name.includes("包廂");
+
+    let minutes: number;
+    let price_cents: number;
+    if (isRoomTable) {
+      const startedAt = new Date(t.started_at);
+      minutes = Math.max(
+        1,
+        Math.round((endedAt.getTime() - startedAt.getTime()) / 60000)
       );
-      return;
+      price_cents = 0;
+    } else {
+      try {
+        const result = pricePerTicket({
+          tableName: meta.name,
+          area: meta.area ?? "",
+          startedAt: new Date(t.started_at),
+          endedAt,
+        });
+        minutes = result.minutes;
+        price_cents = result.price_cents;
+      } catch (error) {
+        console.error("pricePerTicket failed", error);
+        alert(
+          `計價失敗：${
+            error instanceof Error ? error.message : "未知的計價錯誤"
+          }`
+        );
+        return;
+      }
     }
 
     const { error: updErr } = await supabase
       .from("tickets")
       .update({
         ended_at: endedAt.toISOString(),
-        minutes: pricing.minutes,
-        price_cents: pricing.price_cents,
+        minutes,
+        price_cents,
         auto_ended: auto,
       })
       .eq("id", ticketId);
@@ -273,8 +292,8 @@ export default function TablePage() {
     setUndoTicket({
       ...t,
       ended_at: endedAt.toISOString(),
-      minutes: pricing.minutes,
-      price_cents: pricing.price_cents,
+      minutes,
+      price_cents,
       auto_ended: auto,
     });
     await loadTickets(s);
@@ -495,211 +514,236 @@ export default function TablePage() {
   const [pickOpen, setPickOpen] = useState(false);
 
   return (
-    <main className="max-w-xl mx-auto p-4 space-y-6">
-      <header className="space-y-2">
-        <div className="space-y-1">
-          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-            {process.env.NEXT_PUBLIC_APP_TITLE || "SeatCounter"}
-          </p>
-          <h1 className="text-2xl font-bold">
-            {tableMeta?.name ?? `桌位 ${tableId}`}
-          </h1>
-        </div>
-        <div className="space-y-1 text-sm text-gray-600">
-          <p>桌標識：{tableId}</p>
-          {tableMeta?.area ? <p>區域：{tableMeta.area}</p> : null}
-          {tableMetaLoading && !tableMeta ? <p>桌位資料載入中…</p> : null}
-          {tableMetaError ? (
-            <p className="text-red-500">桌位資料錯誤：{tableMetaError}</p>
-          ) : null}
-          {openedAt && (
-            <p>
-              已入座：
-              {formatDistanceToNowStrict(openedAt, { addSuffix: false })}
+    <div className="min-h-screen bg-[var(--background)] text-[var(--foreground)]">
+      <main className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-8 sm:px-6">
+        <Card className="space-y-4">
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
+              {process.env.NEXT_PUBLIC_APP_TITLE || "SeatCounter"}
             </p>
-          )}
-        </div>
-        {isRoom ? (
-          <label className="flex items-center justify-between rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm">
-            <div className="flex flex-col">
-              <span className="font-semibold text-gray-700">教學加價</span>
-              <span className="text-xs text-gray-500">
-                勾選後結帳時計入教學方案
-              </span>
-            </div>
-            <input
-              type="checkbox"
-              className="h-5 w-5"
+            <h1 className={font.h1}>{tableMeta?.name ?? `桌位 ${tableId}`}</h1>
+          </div>
+          <div className="space-y-1 text-sm text-[var(--muted-foreground)]">
+            <p>桌標識：{tableId}</p>
+            {tableMeta?.area ? <p>區域：{tableMeta.area}</p> : null}
+            {tableMetaLoading && !tableMeta ? <p>桌位資料載入中…</p> : null}
+            {tableMetaError ? (
+              <p className="text-[var(--destructive)]">桌位資料錯誤：{tableMetaError}</p>
+            ) : null}
+            {openedAt ? (
+              <p>
+                已入座：
+                {formatDistanceToNowStrict(openedAt, { addSuffix: false })}
+              </p>
+            ) : null}
+          </div>
+          {isRoom ? (
+            <Toggle
               checked={teaching}
-              onChange={(event) => setTeaching(event.target.checked)}
+              onChange={setTeaching}
+              label="教學加價"
+              description="勾選後結帳時計入教學方案"
             />
-          </label>
-        ) : null}
-      </header>
+          ) : null}
+        </Card>
 
-      <section className="flex items-center justify-between">
-        <div className="text-4xl font-extrabold">目前人數：{headcount}</div>
-        <div className="text-sm text-gray-600">
-          {session ? `Session: ${session.id.slice(0, 8)}...` : "尚未開桌"}
-        </div>
-      </section>
-
-      <section className="grid grid-cols-5 gap-2">
-        <button
-          disabled={busy}
-          onClick={() => handleEnter(1)}
-          className="col-span-1 py-3 rounded-xl border"
-        >
-          +1
-        </button>
-        <button
-          disabled={busy}
-          onClick={() => handleEnter(2)}
-          className="col-span-1 py-3 rounded-xl border"
-        >
-          +2
-        </button>
-        <button
-          disabled={busy}
-          onClick={() => handleEnter(3)}
-          className="col-span-1 py-3 rounded-xl border"
-        >
-          +3
-        </button>
-        <button
-          disabled={busy || headcount === 0}
-          onClick={handleLeaveOldest}
-          className="col-span-1 py-3 rounded-xl border"
-        >
-          離場（最早）
-        </button>
-        <button
-          disabled={busy || headcount === 0}
-          onClick={() => setPickOpen(true)}
-          className="col-span-1 py-3 rounded-xl border"
-        >
-          離場（指定）
-        </button>
-      </section>
-
-      {undoTicket && (
-        <section className="p-3 rounded-lg bg-yellow-50 border border-yellow-200 flex items-center justify-between">
+        <Card className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            已結束：{undoTicket.label}（
-            {format(new Date(undoTicket.started_at), "HH:mm")} →{" "}
-            {format(new Date(undoTicket.ended_at!), "HH:mm")}）
+            <p className="text-sm text-[var(--muted-foreground)]">目前人數</p>
+            <p className="text-4xl font-extrabold text-[var(--foreground)]">
+              {headcount}
+            </p>
           </div>
-          <button onClick={handleUndo} className="px-3 py-1 rounded-md border">
-            撤銷
-          </button>
-        </section>
-      )}
+          <div className="text-sm text-[var(--muted-foreground)]">
+            <p>{session ? `Session: ${session.id.slice(0, 8)}…` : "尚未開桌"}</p>
+            {session?.opened_at ? (
+              <p>開桌時間：{format(new Date(session.opened_at), "HH:mm")}</p>
+            ) : null}
+          </div>
+        </Card>
 
-      <section>
-        <h2 className="font-semibold mb-2">進行中</h2>
-        <ul className="space-y-1">
-          {openTickets.map((t) => (
-            <li
-              key={t.id}
-              className="flex items-center justify-between px-3 py-2 rounded-md border"
+        <Card className="space-y-3">
+          <div className="grid gap-3 sm:grid-cols-3">
+            <Button
+              fullWidth
+              variant="primary"
+              disabled={busy}
+              onClick={() => handleEnter(1)}
             >
-              <div className="flex flex-col">
-                <span className="font-bold">{t.label}</span>
-                <span className="text-xs text-gray-600">
-                  {format(new Date(t.started_at), "HH:mm")} • 已{" "}
-                  {formatDistanceToNowStrict(new Date(t.started_at))}
-                </span>
-              </div>
-              <button
-                disabled={busy}
-                onClick={() => handleLeavePick(t.id)}
-                className="px-3 py-1 rounded-md border"
-              >
-                結束
-              </button>
-            </li>
-          ))}
-          {openTickets.length === 0 && (
-            <li className="text-sm text-gray-500">目前無進行中的票</li>
-          )}
-        </ul>
-      </section>
-
-      <section>
-        <h2 className="font-semibold mb-2">已完成（最近）</h2>
-        <ul className="space-y-1">
-          {closedTickets.map((t) => (
-            <li
-              key={t.id}
-              className="flex items-center justify-between px-3 py-2 rounded-md border"
+              +1
+            </Button>
+            <Button
+              fullWidth
+              variant="primary"
+              disabled={busy}
+              onClick={() => handleEnter(2)}
             >
-              <div className="flex flex-col">
-                <span className="font-bold">{t.label}</span>
-                <span className="text-xs text-gray-600">
-                  {format(new Date(t.started_at), "HH:mm")} →{" "}
-                  {t.ended_at ? format(new Date(t.ended_at), "HH:mm") : "-"}
-                </span>
-              </div>
-              <div className="text-sm">
-                {t.minutes ?? "-"} 分 • NT$
-                {t.price_cents ? (t.price_cents / 100).toFixed(0) : "-"}
-              </div>
-            </li>
-          ))}
-          {closedTickets.length === 0 && (
-            <li className="text-sm text-gray-500">尚無已完成的票</li>
-          )}
-        </ul>
-      </section>
+              +2
+            </Button>
+            <Button
+              fullWidth
+              variant="primary"
+              disabled={busy}
+              onClick={() => handleEnter(3)}
+            >
+              +3
+            </Button>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Button
+              fullWidth
+              variant="secondary"
+              disabled={busy || headcount === 0}
+              onClick={handleLeaveOldest}
+            >
+              離場（最早）
+            </Button>
+            <Button
+              fullWidth
+              variant="secondary"
+              disabled={busy || headcount === 0}
+              onClick={() => setPickOpen(true)}
+            >
+              離場（指定）
+            </Button>
+          </div>
+          <Button
+            variant="danger"
+            fullWidth
+            disabled={busy}
+            loading={busy}
+            onClick={handleCheckout}
+          >
+            結帳（結束全部）
+          </Button>
+        </Card>
 
-      <section>
-        <button
-          disabled={busy}
-          onClick={handleCheckout}
-          className="w-full py-3 rounded-xl border"
-        >
-          結帳（結束全部）
-        </button>
-      </section>
-
-      {/* 指定離場選擇器（簡化版） */}
-      {pickOpen && (
-        <div className="fixed inset-0 bg-black/20 flex items-end">
-          <div className="bg-white w-full p-4 rounded-t-2xl space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="font-semibold">選擇要結束的票</h3>
-              <button
-                className="px-3 py-1 border rounded-md"
-                onClick={() => setPickOpen(false)}
-              >
-                關閉
-              </button>
+        {undoTicket ? (
+          <Card className="flex items-center justify-between gap-4 border-[var(--accent)]/40 bg-[var(--accent)]/20 text-sm">
+            <div>
+              已結束：{undoTicket.label}（
+              {format(new Date(undoTicket.started_at), "HH:mm")} → {" "}
+              {format(new Date(undoTicket.ended_at!), "HH:mm")}）
             </div>
-            <div className="grid grid-cols-3 gap-2">
-              {openTickets.map((t) => (
-                <button
-                  key={t.id}
-                  className="py-3 rounded-xl border"
-                  onClick={() => {
-                    setPickOpen(false);
-                    handleLeavePick(t.id);
-                  }}
-                >
-                  {t.label}
-                  <div className="text-xs text-gray-600">
-                    {format(new Date(t.started_at), "HH:mm")}
-                  </div>
-                </button>
-              ))}
-              {openTickets.length === 0 && (
-                <div className="text-sm text-gray-500 col-span-3">
-                  沒有可選的票
+            <Button variant="ghost" size="sm" onClick={handleUndo}>
+              撤銷
+            </Button>
+          </Card>
+        ) : null}
+
+        <Card className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className={font.h2}>進行中</h2>
+            <span className="text-sm text-[var(--muted-foreground)]">
+              {openTickets.length} 張
+            </span>
+          </div>
+          <div className="space-y-2">
+            {openTickets.map((t) => (
+              <div
+                key={t.id}
+                className="flex items-center justify-between rounded-[var(--radius)] border border-[var(--border)] bg-[var(--card)] px-4 py-3 text-sm shadow-sm"
+              >
+                <div className="flex flex-col">
+                  <span className="font-semibold text-[var(--foreground)]">
+                    {t.label}
+                  </span>
+                  <span className="text-xs text-[var(--muted-foreground)]">
+                    {format(new Date(t.started_at), "HH:mm")} • 已 {" "}
+                    {formatDistanceToNowStrict(new Date(t.started_at))}
+                  </span>
                 </div>
-              )}
+                <Button
+                  size="sm"
+                  variant="primary"
+                  disabled={busy}
+                  onClick={() => handleLeavePick(t.id)}
+                >
+                  結束
+                </Button>
+              </div>
+            ))}
+            {openTickets.length === 0 ? (
+              <p className="text-sm text-[var(--muted-foreground)]">
+                目前無進行中的票
+              </p>
+            ) : null}
+          </div>
+        </Card>
+
+        <Card className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className={font.h2}>已完成（最近）</h2>
+            <span className="text-sm text-[var(--muted-foreground)]">
+              {closedTickets.length} 張
+            </span>
+          </div>
+          <div className="space-y-2">
+            {closedTickets.map((t) => (
+              <div
+                key={t.id}
+                className="flex items-center justify-between rounded-[var(--radius)] border border-[var(--border)] bg-[var(--card)] px-4 py-3 text-sm shadow-sm"
+              >
+                <div className="flex flex-col">
+                  <span className="font-semibold text-[var(--foreground)]">
+                    {t.label}
+                  </span>
+                  <span className="text-xs text-[var(--muted-foreground)]">
+                    {format(new Date(t.started_at), "HH:mm")} → {" "}
+                    {t.ended_at ? format(new Date(t.ended_at), "HH:mm") : "-"}
+                  </span>
+                </div>
+                <div className="text-sm text-[var(--muted-foreground)]">
+                  {t.minutes ?? "-"} 分 • NT$
+                  {t.price_cents ? (t.price_cents / 100).toFixed(0) : "-"}
+                </div>
+              </div>
+            ))}
+            {closedTickets.length === 0 ? (
+              <p className="text-sm text-[var(--muted-foreground)]">
+                尚無已完成的票
+              </p>
+            ) : null}
+          </div>
+        </Card>
+
+        {pickOpen && (
+          <div className="fixed inset-0 z-10 flex items-end bg-black/40 p-4">
+            <div className="w-full space-y-4 rounded-2xl bg-[var(--card)] p-6 text-[var(--card-foreground)] shadow-xl">
+              <div className="flex items-center justify-between">
+                <h3 className={font.h2}>選擇要結束的票</h3>
+                <Button variant="ghost" size="sm" onClick={() => setPickOpen(false)}>
+                  關閉
+                </Button>
+              </div>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                {openTickets.map((t) => (
+                  <Button
+                    key={t.id}
+                    variant="secondary"
+                    onClick={() => {
+                      setPickOpen(false);
+                      handleLeavePick(t.id);
+                    }}
+                  >
+                    <span className="flex flex-col text-left">
+                      <span className="font-semibold">{t.label}</span>
+                      <span className="text-xs text-[var(--muted-foreground)]">
+                        {format(new Date(t.started_at), "HH:mm")}
+                      </span>
+                    </span>
+                  </Button>
+                ))}
+                {openTickets.length === 0 ? (
+                  <p className="col-span-full text-sm text-[var(--muted-foreground)]">
+                    沒有可選的票
+                  </p>
+                ) : null}
+              </div>
             </div>
           </div>
-        </div>
-      )}
-    </main>
+        )}
+      </main>
+    </div>
   );
 }

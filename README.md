@@ -35,3 +35,25 @@ The easiest way to deploy your Next.js app is to use the [Vercel Platform](https
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
 # seatCounter
+
+## UI Components
+
+```tsx
+import { Button } from "@/ui/Button";
+import { Card } from "@/ui/Card";
+import { Input } from "@/ui/Input";
+import { Toggle } from "@/ui/Toggle";
+
+<Card>
+  <Input label="Search" placeholder="Type here" />
+  <Button variant="primary" size="md" onClick={handleClick}>
+    Confirm
+  </Button>
+  <Toggle
+    checked={teaching}
+    onChange={setTeaching}
+    label="Teaching"
+    description="Apply the teaching rate when enabled"
+  />
+</Card>
+```

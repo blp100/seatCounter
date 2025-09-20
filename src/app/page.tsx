@@ -4,6 +4,10 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { supabase } from "@/lib/supabaseClient";
+import { Button } from "@/ui/Button";
+import { Card } from "@/ui/Card";
+import { Input } from "@/ui/Input";
+import { font } from "@/ui/theme";
 
 type TableRow = {
   id: string;
@@ -124,30 +128,30 @@ export default function HomePage() {
 
   if (pinRequired && !pinInitialized) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-950 px-6">
-        <div className="text-lg text-slate-200">Loading…</div>
+      <div className="flex min-h-screen items-center justify-center bg-[var(--background)] px-6">
+        <div className="text-lg text-[var(--muted-foreground)]">Loading…</div>
       </div>
     );
   }
 
   if (pinRequired && !pinVerified) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-950 px-6">
+      <div className="flex min-h-screen items-center justify-center bg-[var(--background)] px-6">
         <form
           onSubmit={handlePinSubmit}
-          className="w-full max-w-md space-y-6 rounded-3xl border border-slate-800 bg-slate-900/80 p-8 shadow-lg"
+          className="w-full max-w-md space-y-6 rounded-3xl border border-[var(--border)] bg-[var(--card)] p-8 shadow-lg"
         >
           <div className="space-y-2 text-center">
-            <h1 className="text-2xl font-semibold text-white">
+            <h1 className="text-2xl font-semibold text-[var(--foreground)]">
               Enter Test PIN
             </h1>
-            <p className="text-sm text-slate-400">
+            <p className="text-sm text-[var(--muted-foreground)]">
               This environment is protected. Please enter the test PIN to
               continue.
             </p>
           </div>
           <div className="space-y-2">
-            <label className="text-left text-sm font-medium text-slate-300">
+            <label className="text-left text-sm font-medium text-[var(--foreground)]">
               PIN
             </label>
             <input
@@ -157,97 +161,95 @@ export default function HomePage() {
                 setPinValue(event.target.value);
                 if (pinError) setPinError(null);
               }}
-              className="h-12 w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 text-lg text-white focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-400/60"
+              className="h-12 w-full rounded-2xl border border-[var(--border)] bg-[var(--background)] px-4 text-lg text-[var(--foreground)] focus:border-[var(--primary)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
               autoFocus
               inputMode="numeric"
             />
             {pinError ? (
-              <p className="text-sm text-rose-400">{pinError}</p>
+              <p className="text-sm text-[var(--destructive)]">{pinError}</p>
             ) : null}
           </div>
-          <button
-            type="submit"
-            className="h-12 w-full rounded-2xl bg-indigo-500 text-lg font-semibold text-white transition hover:bg-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-400/70"
-          >
+          <Button type="submit" variant="primary" fullWidth>
             Unlock
-          </button>
+          </Button>
         </form>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
+    <div className="min-h-screen bg-[var(--background)] text-[var(--foreground)]">
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-8 px-6 py-10">
         <header className="space-y-2">
-          <h1 className="text-3xl font-semibold text-white">Select a Table</h1>
-          <p className="text-base text-slate-400">
+          <h1 className={font.h1}>Select a Table</h1>
+          <p className="text-base text-[var(--muted-foreground)]">
             Choose a table to view or update its current session.
           </p>
         </header>
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-          <label className="flex w-full max-w-md flex-col gap-2">
-            <span className="text-sm font-medium uppercase tracking-wide text-slate-400">
-              Search
-            </span>
-            <input
-              type="text"
+
+        <Card className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div className="w-full max-w-md">
+            <Input
+              label="Search"
+              placeholder="Filter by table name or area"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Filter by table name or area"
-              className="h-12 rounded-2xl border border-slate-800 bg-slate-900 px-4 text-lg text-white shadow-sm transition focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-400/70"
             />
-          </label>
-          <button
-            type="button"
+          </div>
+          <Button
+            variant="primary"
             onClick={handleRefresh}
-            disabled={loading}
-            className="h-12 w-full max-w-[160px] rounded-2xl bg-indigo-500 text-lg font-semibold text-white shadow-sm transition hover:bg-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-400/70 disabled:cursor-not-allowed disabled:opacity-60"
+            loading={loading}
+            className="sm:w-auto"
           >
-            {loading ? "Refreshing…" : "Refresh"}
-          </button>
-        </div>
+            Refresh
+          </Button>
+        </Card>
+
         {error ? (
-          <div className="rounded-2xl border border-rose-500/30 bg-rose-950/40 p-4 text-rose-200">
+          <Card className="border-[var(--destructive)]/40 bg-[var(--destructive)]/10 text-[var(--destructive)]">
             <p className="text-sm font-medium">Failed to load tables.</p>
-            <p className="text-sm text-rose-300">{error}</p>
-          </div>
+            <p className="text-sm">{error}</p>
+          </Card>
         ) : null}
+
         {loading && tables.length === 0 ? (
-          <div className="flex flex-1 items-center justify-center py-20 text-lg text-slate-300">
+          <Card className="text-center text-[var(--muted-foreground)]">
             Loading tables…
-          </div>
+          </Card>
         ) : null}
+
         {!loading && groupedTables.length === 0 ? (
-          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-6 text-center text-slate-300">
+          <Card className="text-center text-[var(--muted-foreground)]">
             No tables match your filters.
-          </div>
+          </Card>
         ) : (
           groupedTables.map(([area, tablesInArea]) => (
-            <section key={area} className="space-y-4">
+            <Card key={area} className="space-y-6">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 className="text-2xl font-semibold text-white">{area}</h2>
-                <span className="text-sm text-slate-400">
+                <h2 className={font.h2}>{area}</h2>
+                <span className="text-sm text-[var(--muted-foreground)]">
                   {tablesInArea.length} table
                   {tablesInArea.length === 1 ? "" : "s"}
                 </span>
               </div>
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {tablesInArea.map((table) => (
-                  <button
+                  <Button
                     key={table.id}
-                    type="button"
+                    variant="secondary"
+                    size="lg"
                     onClick={() => handleSelectTable(table.id)}
-                    className="flex h-32 flex-col justify-between rounded-3xl border border-slate-800 bg-slate-900 px-6 py-5 text-left shadow-sm transition hover:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-400/70 active:scale-[.98]"
+                    className="h-32 w-full flex-col items-start justify-between text-left"
                   >
-                    <span className="text-2xl font-semibold text-white">
-                      {table.name}
+                    <span className="text-xl font-semibold">{table.name}</span>
+                    <span className="text-sm text-[var(--muted-foreground)]">
+                      Tap to open
                     </span>
-                    <span className="text-sm text-slate-400">Tap to open</span>
-                  </button>
+                  </Button>
                 ))}
               </div>
-            </section>
+            </Card>
           ))
         )}
       </div>
