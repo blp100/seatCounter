@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { ThemeToggle } from "@/ui/ThemeToggle";
+import { AppHeader } from "@/ui/AppHeader";
 
 export const metadata: Metadata = {
   title: process.env.NEXT_PUBLIC_APP_TITLE || "SeatCounter",
@@ -35,9 +35,7 @@ export default function RootLayout({
             __html: themeInitScript,
           }}
         />
-        <header className="flex items-center justify-end gap-4 border-b border-[var(--border)] bg-[var(--card)] px-6 py-4 text-[var(--card-foreground)] shadow-sm">
-          <ThemeToggle />
-        </header>
+        <AppHeader />
         {children}
       </body>
     </html>
