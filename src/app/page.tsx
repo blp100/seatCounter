@@ -16,6 +16,21 @@ type TableRow = {
   is_active: boolean;
 };
 
+type TicketRow = {
+  id: string;
+  ended_at: string | null;
+  sessions:
+    | {
+        table_id: string | null;
+        closed_at: string | null;
+      }
+    | Array<{
+        table_id: string | null;
+        closed_at: string | null;
+      }>
+    | null;
+};
+
 const PIN_STORAGE_KEY = "seatCounter:testPinVerified";
 const FALLBACK_AREA_LABEL = "Other";
 
@@ -59,6 +74,9 @@ export default function HomePage() {
   );
 
   const [tables, setTables] = useState<TableRow[]>([]);
+  const [openTicketCounts, setOpenTicketCounts] = useState<Map<string, number>>(
+    () => new Map<string, number>()
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -67,19 +85,43 @@ export default function HomePage() {
     setLoading(true);
     setError(null);
     try {
-      const { data, error: supabaseError } = await supabase
-        .from("tables")
-        .select("id, name, area, is_active")
-        .eq("is_active", true)
-        .order("area", { ascending: true, nullsFirst: true })
-        .order("name", { ascending: true });
+      const [tablesResponse, ticketsResponse] = await Promise.all([
+        supabase
+          .from("tables")
+          .select("id, name, area, is_active")
+          .eq("is_active", true)
+          .order("area", { ascending: true, nullsFirst: true })
+          .order("name", { ascending: true }),
+        supabase
+          .from("tickets")
+          .select("id, ended_at, sessions!inner(table_id, closed_at)")
+          .is("ended_at", null)
+          .is("sessions.closed_at", null),
+      ]);
 
-      if (supabaseError) throw supabaseError;
+      if (tablesResponse.error) throw tablesResponse.error;
+      if (ticketsResponse.error) throw ticketsResponse.error;
 
-      setTables((data as TableRow[]) ?? []);
+      const counts = new Map<string, number>();
+      (ticketsResponse.data as TicketRow[] | null)?.forEach((ticket) => {
+        const sessionData = ticket.sessions;
+        const tableId = Array.isArray(sessionData)
+          ? sessionData[0]?.table_id
+          : sessionData?.table_id;
+        const sessionClosed = Array.isArray(sessionData)
+          ? sessionData[0]?.closed_at
+          : sessionData?.closed_at;
+        if (!tableId || sessionClosed) return;
+        const key = String(tableId);
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      });
+
+      setTables((tablesResponse.data as TableRow[]) ?? []);
+      setOpenTicketCounts(counts);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load tables.");
       setTables([]);
+      setOpenTicketCounts(new Map<string, number>());
     } finally {
       setLoading(false);
     }
@@ -88,6 +130,17 @@ export default function HomePage() {
   useEffect(() => {
     if (pinRequired && (!pinInitialized || !pinVerified)) return;
     void loadTables();
+  }, [pinRequired, pinInitialized, pinVerified, loadTables]);
+
+  useEffect(() => {
+    if (pinRequired && (!pinInitialized || !pinVerified)) return;
+    const intervalId = window.setInterval(() => {
+      void loadTables();
+    }, 15000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
   }, [pinRequired, pinInitialized, pinVerified, loadTables]);
 
   const handleRefresh = useCallback(() => {
@@ -242,7 +295,14 @@ export default function HomePage() {
                     onClick={() => handleSelectTable(table.id)}
                     className="h-32 w-full flex-col items-start justify-between text-left"
                   >
-                    <span className="text-xl font-semibold">{table.name}</span>
+                    <div className="flex w-full items-start justify-between">
+                      <span className="text-xl font-semibold">
+                        {table.name}
+                      </span>
+                      <span className="text-lg font-semibold tracking-tight text-[var(--foreground)]">
+                        {(openTicketCounts.get(String(table.id)) ?? 0) + "人"}
+                      </span>
+                    </div>
                     <span className="text-sm text-[var(--muted-foreground)]">
                       Tap to open
                     </span>
